@@ -1,0 +1,62 @@
+name: jev-call-4
+
+# 多问题扇出 + 延迟测量，结果写回 docs/result4.md
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 调用 TypeSafe（3 个并行判断）
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: |
+          set -uo pipefail
+
+          cat > payload.json <<'JSON'
+          {
+            "model": "jev-latest",
+            "state": "客户反映同一订单被扣款两次。退款已经批准，但款项尚未到账。服务可以正常使用。",
+            "questions": {
+              "double_charge": {"type": "noul", "instructions": "该客户是否被重复扣款？"},
+              "need_refund": {"type": "noul", "instructions": "是否需要再次发起退款？"},
+              "urgency": {"type": "noul", "instructions": "此事是否属于高优先级？"}
+            }
+          }
+          JSON
+
+          out=$(curl -sS -o resp.json -w '%{http_code} %{time_total}' \
+            -X POST https://api.typesafe.ai/v1/systemone \
+            -H "Authorization: Bearer $TYPESAFE_API_KEY" \
+            -H "Content-Type: application/json" \
+            --data-binary @payload.json) || out="curl-failed 0"
+          code=$(echo "$out" | cut -d' ' -f1)
+          secs=$(echo "$out" | cut -d' ' -f2)
+
+          echo "HTTP $code  ${secs}s"
+          cat resp.json
+
+          mkdir -p docs
+          {
+            printf 'HTTP %s\n' "$code"
+            printf 'latency_seconds %s\n\n' "$secs"
+            cat resp.json
+            printf '\n'
+          } > docs/result4.md
+          cat docs/result4.md
+
+      - name: 提交结果
+        if: always()
+        run: |
+          git config user.name "jev-relay-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add docs/result4.md
+          git commit -m "TypeSafe fanout result $(date -u +%Y-%m-%dT%H:%M:%SZ)" || echo "nothing"
+          git push || echo "push failed"
