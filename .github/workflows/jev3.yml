@@ -1,0 +1,69 @@
+name: jev-call-3
+
+# 把 TypeSafe 的响应写进仓库文件，便于外部读取
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        description: "state：要判断的材料"
+        required: true
+        default: "请尽快处理，今天必须完成。"
+      questions:
+        description: "questions JSON"
+        required: true
+        default: '{"urgent":{"type":"noul","instructions":"这段话是否表达了紧迫性？"}}'
+
+permissions:
+  contents: write
+
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 调用 TypeSafe
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          STATE: ${{ inputs.state }}
+          QUESTIONS: ${{ inputs.questions }}
+        run: |
+          set -uo pipefail
+
+          python3 - <<'PY' > payload.json
+          import json, os
+          payload = {
+              "model": "jev-latest",
+              "state": os.environ["STATE"],
+              "questions": json.loads(os.environ["QUESTIONS"]),
+          }
+          print(json.dumps(payload, ensure_ascii=False))
+          PY
+
+          echo "=== request ==="
+          cat payload.json
+
+          code=$(curl -sS -o resp.json -w '%{http_code}' \
+            -X POST https://api.typesafe.ai/v1/systemone \
+            -H "Authorization: Bearer $TYPESAFE_API_KEY" \
+            -H "Content-Type: application/json" \
+            --data-binary @payload.json) || code="curl-failed"
+
+          echo "=== response ==="
+          echo "HTTP $code"
+          cat resp.json
+
+          mkdir -p docs
+          printf 'HTTP %s\n\n%s\n' "$code" "$(cat resp.json)" > docs/result.md
+          echo "--- docs/result.md ---"
+          cat docs/result.md
+
+      - name: 把结果提交回仓库
+        if: always()
+        run: |
+          git config user.name "jev-relay-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add docs/result.md
+          git commit -m "TypeSafe result $(date -u +%Y-%m-%dT%H:%M:%SZ)" || echo "nothing to commit"
+          git push || echo "push failed"
