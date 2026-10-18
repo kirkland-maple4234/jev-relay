@@ -1,0 +1,74 @@
+﻿name: jev-call-2
+
+# 手动触发：Actions 页面 -> jev-call -> Run workflow
+# runner 在 GitHub 的境外机房，绕过 TypeSafe 的地区封锁
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        description: "state：要判断的材料"
+        required: true
+        default: "请尽快处理，今天必须完成。"
+      questions:
+        description: 'questions JSON（键名=问题ID，值是 {type, instructions}）'
+        required: true
+        default: '{"urgent":{"type":"noul","instructions":"这段话是否表达了紧迫性？"}}'
+
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 组装并调用 TypeSafe /v1/systemone
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          STATE: ${{ inputs.state }}
+          QUESTIONS: ${{ inputs.questions }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > payload.json
+          import json, os
+          payload = {
+              "model": "jev-latest",
+              "state": os.environ["STATE"],
+              "questions": json.loads(os.environ["QUESTIONS"]),
+          }
+          print(json.dumps(payload, ensure_ascii=False))
+          PY
+
+          echo "=== request ==="
+          cat payload.json
+
+          echo "=== response ==="
+          code=$(curl -sS -o resp.json -w '%{http_code}' \
+            -X POST https://api.typesafe.ai/v1/systemone \
+            -H "Authorization: Bearer $TYPESAFE_API_KEY" \
+            -H "Content-Type: application/json" \
+            --data-binary @payload.json)
+          echo "HTTP $code"
+          cat resp.json
+          echo
+          {
+            echo "### TypeSafe result"
+            echo ""
+            echo '```'
+            echo "HTTP $code"
+            cat resp.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$code" != "200" ]; then
+            echo "::error::TypeSafe 返回 $code"
+            exit 1
+          fi
+
+      - name: 保存响应为构建产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jev-response
+          path: |
+            payload.json
+            resp.json
+          if-no-files-found: warn
+
